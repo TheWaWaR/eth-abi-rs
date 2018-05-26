@@ -4,3 +4,6 @@ version = "0.1.0"
 authors = ["Qian Linfeng <thewawar@gmail.com>"]
 
 [dependencies]
+clap = "^2.31.2"
+eth-abi = { path = "../eth-abi" }
+rustc-hex = "^1.0.0"
