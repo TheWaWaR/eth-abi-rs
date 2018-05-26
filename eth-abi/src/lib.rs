@@ -149,12 +149,10 @@ pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> 
             Ok(buf.to_vec())
         }
         ParamType::Bool => {
-            let value_str = if value_str == "true" {
-                "1"
-            } else if value_str == "false" {
-                "0"
-            } else {
-                return Err(format!(""));
+            let value_str = match value_str {
+                "true" => "1",
+                "false" => "0",
+                _ => return Err(format!("Invalid value for bool: {}", value_str)),
             };
             Ok(encode(&ParamType::Uint(8), value_str)?)
         }
@@ -218,5 +216,18 @@ mod tests {
             ).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn test_encode_bool() {
+        let expected_false = "0000000000000000000000000000000000000000000000000000000000000000"
+            .from_hex()
+            .unwrap();
+        let expected_true = "0000000000000000000000000000000000000000000000000000000000000001"
+            .from_hex()
+            .unwrap();
+        let param_type = ParamType::from_str("bool").unwrap();
+        assert_eq!(encode(&param_type, "true").unwrap(), expected_true);
+        assert_eq!(encode(&param_type, "false").unwrap(), expected_false);
     }
 }
