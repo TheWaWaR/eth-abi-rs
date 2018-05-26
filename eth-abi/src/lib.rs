@@ -24,6 +24,10 @@ pub enum ParamType {
     Uint(usize),
     /// Boolean
     Bool,
+    /// TODO: fixed<M>x<N>: Signed fixed-point decimal number
+    Fixed(usize, usize),
+    /// TODO: Unsigned variant of fixed<M>x<N>
+    Ufixed(usize, usize),
     /// String
     String,
     /// Dynamic Array
@@ -69,18 +73,27 @@ impl ParamType {
                 let len = s[3..]
                     .parse::<usize>()
                     .map_err(|e| format!("Invalid param type: {}, {:?}", s, e))?;
+                if len < 8 || len > 256 || len % 8 != 0 {
+                    return Err(format!("Invalid param type: {}", s));
+                }
                 ParamType::Int(len)
             }
             s if s.starts_with("uint") => {
                 let len = s[4..]
                     .parse::<usize>()
                     .map_err(|e| format!("Invalid param type: {}, {:?}", s, e))?;
+                if len < 8 || len > 256 || len % 8 != 0 {
+                    return Err(format!("Invalid param type: {}", s));
+                }
                 ParamType::Uint(len)
             }
             s if s.starts_with("bytes") => {
                 let len = s[4..]
                     .parse::<usize>()
                     .map_err(|e| format!("Invalid param type: {}, {:?}", s, e))?;
+                if len <= 0 || len > 32 {
+                    return Err(format!("Invalid param type: {}", s));
+                }
                 ParamType::FixedBytes(len)
             }
             _ => return Err(format!("Invalid param type: {}", s)),
@@ -98,16 +111,48 @@ impl ParamType {
     }
 }
 
-/// Encode a integer value
-pub fn encode_int(value_str: &str, _len: u32) -> Bytes {
-    let value = if value_str.starts_with("0x") {
-        U256::from(value_str[2..].from_hex().unwrap().as_slice())
-    } else {
-        U256::from_dec_str(value_str).unwrap()
-    };
-    let mut buf = [0u8; 32];
-    value.to_big_endian(&mut buf);
-    buf.to_vec()
+/// Encode a value by type
+pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> {
+    match param_type {
+        ParamType::Uint(m) | ParamType::Int(m) => {
+            let value = if value_str.starts_with("0x") {
+                U256::from(value_str[2..].from_hex().unwrap().as_slice())
+            } else if value_str.starts_with("-") {
+                match param_type {
+                    ParamType::Uint(_) => {
+                        return Err(format!(
+                            "Invalid value={} for type={:?}",
+                            value_str, param_type
+                        ));
+                    }
+                    _ => {}
+                }
+                (!U256::from_dec_str(&value_str[1..]).unwrap()) + U256::one()
+            } else {
+                U256::from_dec_str(value_str).unwrap()
+            };
+            if *m < 256 && value >= U256::from(2).pow(U256::from(*m)) {
+                return Err(format!(
+                    "Overflow value={}, type={:?}",
+                    value_str, param_type
+                ));
+            }
+            let mut buf = [0u8; 32];
+            value.to_big_endian(&mut buf);
+            Ok(buf.to_vec())
+        }
+        ParamType::Bool => {
+            let value_str = if value_str == "true" {
+                "1"
+            } else if value_str == "false" {
+                "0"
+            } else {
+                return Err(format!(""));
+            };
+            Ok(encode(&ParamType::Uint(8), value_str)?)
+        }
+        _ => Err(format!("")),
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +195,21 @@ mod tests {
         let expected = "0000000000000000000000000000000000000000000000000000000000000003"
             .from_hex()
             .unwrap();
-        assert_eq!(encode_int("3", 256), expected);
+        let param_type = ParamType::from_str("uint").unwrap();
+        assert_eq!(encode(&param_type, "3").unwrap(), expected);
+        assert_eq!(encode(&param_type, "0x03").unwrap(), expected);
+
+        let expected = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeb3"
+            .from_hex()
+            .unwrap();
+        let param_type = ParamType::from_str("int").unwrap();
+        assert_eq!(encode(&param_type, "-333").unwrap(), expected);
+        assert_eq!(
+            encode(
+                &param_type,
+                "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeb3"
+            ).unwrap(),
+            expected
+        );
     }
 }
