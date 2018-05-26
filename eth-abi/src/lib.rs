@@ -115,6 +115,7 @@ impl ParamType {
 pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> {
     match param_type {
         ParamType::Uint(m) | ParamType::Int(m) => {
+            let mut negative = false;
             let value = if value_str.starts_with("0x") {
                 U256::from(value_str[2..].from_hex().unwrap().as_slice())
             } else if value_str.starts_with("-") {
@@ -127,7 +128,8 @@ pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> 
                     }
                     _ => {}
                 }
-                (!U256::from_dec_str(&value_str[1..]).unwrap()) + U256::one()
+                negative = true;
+                U256::from_dec_str(&value_str[1..]).unwrap()
             } else {
                 U256::from_dec_str(value_str).unwrap()
             };
@@ -137,6 +139,11 @@ pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> 
                     value_str, param_type
                 ));
             }
+            let value = if negative {
+                (!value) + U256::one()
+            } else {
+                value
+            };
             let mut buf = [0u8; 32];
             value.to_big_endian(&mut buf);
             Ok(buf.to_vec())
