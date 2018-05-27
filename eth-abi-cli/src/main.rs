@@ -1,9 +1,8 @@
-
 extern crate clap;
 extern crate eth_abi;
 extern crate rustc_hex as hex;
 
-use eth_abi::{encode, ParamType};
+use eth_abi::{encode_single, ParamType};
 use hex::ToHex;
 
 fn main() {
@@ -15,18 +14,20 @@ fn main() {
                 .takes_value(true)
                 .multiple(true)
                 .number_of_values(2)
-                .help("Function parameters")
+                .help("Function parameters"),
         )
         .get_matches();
     let mut param_iter = matches.values_of("param").unwrap().peekable();
     while param_iter.peek().is_some() {
-        let (type_str, value_str) = (
-            param_iter.next().unwrap(),
-            param_iter.next().unwrap()
-        );
+        let (type_str, value_str) = (param_iter.next().unwrap(), param_iter.next().unwrap());
         println!("type={}, value={}", type_str, value_str);
         let param_type = ParamType::from_str(type_str).unwrap();
         let value_string = value_str.replace("~", "-");
-        println!("[Value]: {}", encode(&param_type, value_string.as_str()).unwrap().to_hex());
+        println!(
+            "[Value]: {}",
+            encode_single(&param_type, value_string.as_str())
+                .unwrap()
+                .to_hex()
+        );
     }
 }

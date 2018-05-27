@@ -3,6 +3,10 @@ name = "eth-abi-cli"
 version = "0.1.0"
 authors = ["Qian Linfeng <thewawar@gmail.com>"]
 
+[[bin]]
+name = "eth-abi"
+path = "src/main.rs"
+
 [dependencies]
 clap = "^2.31.2"
 eth-abi = { path = "../eth-abi" }

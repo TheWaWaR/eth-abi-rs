@@ -100,20 +100,123 @@ impl ParamType {
         })
     }
 
+    /// Padded value length
+    pub fn value_length(&self, value_str: &str) -> usize {
+        32
+    }
+
+    /// Check if this param type can be dynamic
+    pub fn maybe_dynamic(&self) -> bool {
+        match self {
+            ParamType::Bytes
+            | ParamType::String
+            | ParamType::Array(_)
+            | ParamType::FixedArray(_, _)
+            | ParamType::Tuple(_) => true,
+            _ => false,
+        }
+    }
+
     /// Check if the type is dynamic
     pub fn is_dynamic(&self) -> bool {
         match self {
             ParamType::Bytes | ParamType::String | ParamType::Array(_) => true,
-            ParamType::FixedArray(inner, len) if len > &0 => inner.is_dynamic(),
-            ParamType::Tuple(inners) if inners.len() > 0 => inners.iter().any(|t| t.is_dynamic()),
+            ParamType::FixedArray(subtype, len) if *len > 0 => subtype.is_dynamic(),
+            ParamType::Tuple(subtypes) if subtypes.len() > 0 => {
+                subtypes.iter().any(|t| t.is_dynamic())
+            }
             _ => false,
         }
     }
 }
 
-/// Encode a value by type
-pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> {
+enum ParamItem<'a> {
+    Fixed {
+        param_type: ParamType,
+        value_str: &'a str,
+    },
+    Dynamic {
+        offset: Option<usize>,
+        param_type: ParamType,
+        value_str: &'a str,
+    },
+}
+
+/// Params
+pub struct Params<'a> {
+    items: Vec<(ParamType, &'a str)>,
+}
+
+impl<'a> Params<'a> {
+    /// Encode all params
+    pub fn encode(&mut self) -> Result<Bytes, String> {
+        let mut total_offset: usize = 0;
+        let mut items: Vec<ParamItem> = self.items
+            .iter()
+            .map(|(param_type, value_str)| match param_type.maybe_dynamic() {
+                true => {
+                    total_offset += 32;
+                    ParamItem::Dynamic {
+                        offset: None,
+                        param_type: param_type.clone(),
+                        value_str: value_str,
+                    }
+                }
+                false => {
+                    total_offset += param_type.value_length(value_str);
+                    ParamItem::Fixed {
+                        param_type: param_type.clone(),
+                        value_str: value_str,
+                    }
+                }
+            })
+            .collect();
+
+        let mut buf: Vec<u8> = Vec::new();
+        while !items.is_empty() {
+            let mut next_items: Vec<ParamItem> = Vec::new();
+            items.iter_mut().for_each(|item| match item {
+                ParamItem::Dynamic {
+                    ref mut offset,
+                    param_type,
+                    value_str,
+                } => {
+                    *offset = Some(total_offset);
+                    total_offset += 32 + param_type.value_length(value_str);
+                }
+                _ => {}
+            });
+            items = next_items;
+        }
+        Ok(buf)
+    }
+}
+
+fn parse_bytes(value_str: &str) -> (usize, Bytes) {
+    let mut value_bytes = if value_str.starts_with("0x") {
+        value_str[2..].from_hex().unwrap()
+    } else {
+        value_str.as_bytes().to_vec()
+    };
+    let len = value_bytes.len();
+    if value_bytes.len() % 32 > 0 {
+        let padding_len = 32 - (value_bytes.len() % 32);
+        value_bytes.extend(std::iter::repeat(0u8).take(padding_len).collect::<Vec<_>>());
+    }
+    (len, value_bytes)
+}
+
+/// Encode a single value by type
+pub fn encode_single(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> {
     match param_type {
+        ParamType::Address => {
+            let value_bytes = if value_str.starts_with("0x") {
+                &value_str[2..]
+            } else {
+                &value_str[..]
+            };
+            encode_single(&ParamType::Uint(160), value_bytes)
+        }
         ParamType::Uint(m) | ParamType::Int(m) => {
             let mut negative = false;
             let value = if value_str.starts_with("0x") {
@@ -154,9 +257,60 @@ pub fn encode(param_type: &ParamType, value_str: &str) -> Result<Bytes, String> 
                 "false" => "0",
                 _ => return Err(format!("Invalid value for bool: {}", value_str)),
             };
-            Ok(encode(&ParamType::Uint(8), value_str)?)
+            Ok(encode_single(&ParamType::Uint(8), value_str)?)
         }
-        _ => Err(format!("")),
+        ParamType::Fixed(m, n) => {
+            Ok(vec![])
+        }
+        ParamType::Ufixed(m, n) => {
+            Ok(vec![])
+        }
+        ParamType::FixedBytes(m) => {
+            let (len, value_bytes) = parse_bytes(value_str);
+            if len > *m {
+                Err(format!("Error value length: value={}", value_str))
+            } else {
+                Ok(value_bytes)
+            }
+        }
+        ParamType::Bytes => {
+            let mut buf: Vec<u8> = Vec::new();
+            let (len, value_bytes) = parse_bytes(value_str);
+            if len > value_str.chars().count() {
+                Err(format!("Value is not bytes: {}", value_str))
+            } else {
+                // TODO: ugly
+                let len_string = format!("{}", len);
+                buf.extend(encode_single(&ParamType::Uint(256), len_string.as_str()).unwrap());
+                buf.extend(value_bytes);
+                Ok(buf)
+            }
+        }
+        ParamType::String => {
+            let mut buf: Vec<u8> = Vec::new();
+            let (len, value_bytes) = parse_bytes(value_str);
+            // TODO: ugly
+            let len_string = format!("{}", len);
+            buf.extend(encode_single(&ParamType::Uint(256), len_string.as_str()).unwrap());
+            buf.extend(value_bytes);
+            Ok(buf)
+        }
+        // ==== Dynamic Types ====
+        _ => {
+            Err(format!("Cannot encode single dynamic type: {:?}", param_type))
+        }
+        // ParamType::Array(subtype) => {
+        //     // TODO: dynamic
+        //     Ok(vec![])
+        // }
+        // ParamType::FixedArray(subtype, m) => {
+        //     // TODO: maybe dynamic
+        //     Ok(vec![])
+        // }
+        // ParamType::Tuple(subtypes) => {
+        //     // TODO: maybe dynamic
+        //     Ok(vec![])
+        // },
     }
 }
 
@@ -196,21 +350,21 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_int() {
+    fn test_encode_single_int() {
         let expected = "0000000000000000000000000000000000000000000000000000000000000003"
             .from_hex()
             .unwrap();
         let param_type = ParamType::from_str("uint").unwrap();
-        assert_eq!(encode(&param_type, "3").unwrap(), expected);
-        assert_eq!(encode(&param_type, "0x03").unwrap(), expected);
+        assert_eq!(encode_single(&param_type, "3").unwrap(), expected);
+        assert_eq!(encode_single(&param_type, "0x03").unwrap(), expected);
 
         let expected = "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeb3"
             .from_hex()
             .unwrap();
         let param_type = ParamType::from_str("int").unwrap();
-        assert_eq!(encode(&param_type, "-333").unwrap(), expected);
+        assert_eq!(encode_single(&param_type, "-333").unwrap(), expected);
         assert_eq!(
-            encode(
+            encode_single(
                 &param_type,
                 "0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeb3"
             ).unwrap(),
@@ -219,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_bool() {
+    fn test_encode_single_bool() {
         let expected_false = "0000000000000000000000000000000000000000000000000000000000000000"
             .from_hex()
             .unwrap();
@@ -227,7 +381,7 @@ mod tests {
             .from_hex()
             .unwrap();
         let param_type = ParamType::from_str("bool").unwrap();
-        assert_eq!(encode(&param_type, "true").unwrap(), expected_true);
-        assert_eq!(encode(&param_type, "false").unwrap(), expected_false);
+        assert_eq!(encode_single(&param_type, "true").unwrap(), expected_true);
+        assert_eq!(encode_single(&param_type, "false").unwrap(), expected_false);
     }
 }
